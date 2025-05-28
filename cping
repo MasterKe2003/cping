@@ -1,16 +1,25 @@
 #!/bin/bash
 
+# 检查 jq 是否安装
+if ! command -v jq >/dev/null 2>&1; then
+    echo "请先安装 jq 工具 (https://stedolan.github.io/jq/)"
+    exit 1
+fi
+
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# 配置文件路径
-CONFIG_FILE="$SCRIPT_DIR/config.conf"
-LOG_DIR="$SCRIPT_DIR/log"
-PID_FILE="$SCRIPT_DIR/cping.pid"
+# 修改配置文件路径
+CONFIG_DIR="/etc/cping"
+CONFIG_JSON="$CONFIG_DIR/config.json"
+LOG_DIR="/var/log/cping"
+PID_DIR="/var/run/cping"
 
 # 创建必要的目录和文件
+mkdir -p "$CONFIG_DIR"
 mkdir -p "$LOG_DIR"
-touch "$CONFIG_FILE"
+mkdir -p "$PID_DIR"
+touch "$CONFIG_JSON"
 
 # 检查是否以root权限运行
 if [ "$EUID" -ne 0 ]; then 
@@ -18,29 +27,27 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# 添加颜色定义
+GREEN_BG="\033[42m"
+RED_BG="\033[41m"
+RESET="\033[0m"
+
 # 日志函数
 log() {
     local ip=$1
     local message=$2
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
     # 只有系统操作相关的日志才写入总日志文件
     if [[ "$ip" == "cping" ]]; then
         echo "$timestamp - $message" >> "$LOG_DIR/cping.log"
         return
     fi
-    
     # 为每个IP创建日志目录（如果不存在）
     if [ ! -d "$LOG_DIR/$ip" ]; then
         mkdir -p "$LOG_DIR/$ip"
     fi
-    
-    # 根据消息类型写入不同的日志文件
-    if [[ "$message" == *"可达"* ]] && [[ "$message" != *"警告"* ]]; then
+    # 写入日志 - 直接记录原始输出
         echo "$timestamp - $message" >> "$LOG_DIR/$ip/success.log"
-    else
-        echo "$timestamp - $message" >> "$LOG_DIR/$ip/error.log"
-    fi
 }
 
 # 显示日志
@@ -133,12 +140,60 @@ show_log() {
             fi
             ;;
         *)
-            echo "显示系统操作日志："
-            if [ "$follow" = "true" ]; then
-                tail -f "$LOG_DIR/cping.log"
-            else
-                tail -n "$lines" "$LOG_DIR/cping.log"
-            fi
+            echo -e "\033[1mCPing v1.0.0\033[0m - 持续ping监控工具"
+            echo "----------------------------------------"
+            echo -e "\033[1m作者信息:\033[0m"
+            echo "  作者: @MasterKe(http://masterke.cn)"
+            echo "  源码: https://github.com/MasterKe2003/cping"
+            echo "----------------------------------------"
+            echo -e "\033[1m服务管理:\033[0m"
+            echo "  systemctl start cping     启动服务"
+            echo "  systemctl stop cping      停止服务"
+            echo "  systemctl restart cping   重启服务"
+            echo "  systemctl status cping    查看服务状态"
+            echo ""
+            echo -e "\033[1m监控管理:\033[0m"
+            echo "  cping add <ip1> [ip2:true] [ip3]"
+            echo "                           添加监控IP，支持批量添加"
+            echo "                           在IP后添加:true表示全天监控"
+            echo "                           默认为按时间段监控"
+            echo ""
+            echo "  cping del <ip|all>       删除指定IP或所有IP"
+            echo ""
+            echo -e "\033[1m状态查看:\033[0m"
+            echo "  cping status             查看监控状态"
+            echo "  cping status success     查看成功日志"
+            echo "  cping status error       查看错误日志"
+            echo ""
+            echo -e "\033[1m配置信息:\033[0m"
+            echo "  配置文件: $CONFIG_JSON"
+            echo "  日志目录: $LOG_DIR"
+            echo ""
+            echo -e "\033[1m使用示例:\033[0m"
+            echo "  1. 添加监控IP:"
+            echo "     cping add 192.168.1.1"
+            echo "     cping add 192.168.1.1:true    # 全天监控"
+            echo "     cping add 10.0.0.1 10.0.0.2:true 10.0.0.3"
+            echo ""
+            echo "  2. 删除监控IP:"
+            echo "     cping del 192.168.1.1"
+            echo "     cping del all               # 删除所有IP"
+            echo ""
+            echo "  3. 查看日志:"
+            echo "     cping status success        # 查看成功日志"
+            echo "     cping status error          # 查看错误日志"
+            echo ""
+            echo -e "\033[1m注意事项:\033[0m"
+            echo "  - 需要root权限运行"
+            echo "  - 添加或删除IP后需要执行 systemctl restart cping 使配置生效"
+            echo "  - 全天监控的IP不受时间段限制"
+            echo ""
+            echo -e "\033[1m服务维护:\033[0m"
+            echo "  cping install            安装为系统服务"
+            echo "  cping update             更新服务"
+            echo "  cping uninstall          卸载服务"
+            echo "----------------------------------------"
+            exit 1
             ;;
     esac
     
@@ -147,50 +202,269 @@ show_log() {
     fi
 }
 
-# 显示状态
+# 主进程管理函数
+manage_monitoring() {
+    local main_pid=$$
+    echo $main_pid > "$PID_DIR/main.pid"
+    log "cping" "主进程启动 (PID: $main_pid)"
+
+    while true; do
+        for ip_item in "${IP_LIST[@]}"; do
+            ip="${ip_item%%:*}"
+            monitor_24h="${ip_item##*:}"
+            pid_file="$PID_DIR/$ip.pid"
+            
+            # 检查是否应该监控
+            should_monitor=0
+            if [ "$monitor_24h" = "true" ]; then
+                should_monitor=1
+                log "cping" "IP $ip 配置为全天监控"
+            else
+                is_in_time_ranges
+                ret=$?
+                if [ $ret -eq 0 ]; then
+                    should_monitor=1
+                    log "cping" "IP $ip 在监控时间段内"
+                fi
+            fi
+            
+            # 检查进程状态并进行相应操作
+            if [ $should_monitor -eq 1 ]; then
+                if [ ! -f "$pid_file" ] || ! ps -p $(cat "$pid_file" 2>/dev/null) >/dev/null 2>&1; then
+                    # 需要监控但进程不存在或已停止，启动新进程
+                    log "cping" "启动 IP $ip 的监控进程"
+                    start_ip_monitoring "$ip" "$monitor_24h"
+                fi
+            else
+                if [ -f "$pid_file" ]; then
+                    # 不需要监控但进程存在，停止进程
+                    log "cping" "停止 IP $ip 的监控进程"
+                    stop_ip_monitoring "$ip"
+                fi
+            fi
+        done
+        sleep 60
+    done
+}
+
+# 启动单个IP的监控
+start_ip_monitoring() {
+    local ip=$1
+    local monitor_24h=$2
+    local pid_file="$PID_DIR/$ip.pid"
+    
+    # 如果已有进程在运行，先停止它
+    if [ -f "$pid_file" ]; then
+        stop_ip_monitoring "$ip"
+    fi
+    
+    # 启动新的监控进程
+    (
+        log "$ip" "开始监控 $ip"
+        while true; do
+            ping_result=$(ping -c 1 -W 1 "$ip" 2>/dev/null)
+            if [ $? -eq 0 ]; then
+                latency=$(echo "$ping_result" | grep -E "time=|时间=" | tail -n1 | sed -E 's/.*time=|时间=([0-9.]+) *ms.*/\1/')
+                log "$ip" "$ip - 延迟: ${latency}ms"
+            else
+                log "$ip" "$ip - 不可达"
+            fi
+            sleep 1
+        done
+    ) </dev/null >/dev/null 2>&1 &
+    
+    # 保存PID
+    echo $! > "$pid_file"
+    chmod 644 "$pid_file"
+    
+    # 验证进程是否成功启动
+    sleep 1
+    if ! ps -p $(cat "$pid_file") >/dev/null 2>&1; then
+        log "cping" "IP $ip 的监控进程启动失败"
+        rm -f "$pid_file"
+        return 1
+    fi
+    
+    log "cping" "IP $ip 的监控进程已启动 (PID: $(cat "$pid_file"))"
+    return 0
+}
+
+# 停止单个IP的监控
+stop_ip_monitoring() {
+    local ip=$1
+    local pid_file="$PID_DIR/$ip.pid"
+    if [ -f "$pid_file" ]; then
+        kill $(cat "$pid_file") 2>/dev/null
+        rm -f "$pid_file"
+        log "$ip" "停止监控 $ip"
+    fi
+}
+
+# 修改颜色定义，使用 printf 而不是直接的转义序列
+print_with_color() {
+    local text=$1
+    local color=$2
+    printf "%b%s%b" "$color" "$text" "$RESET"
+}
+
+# 修改启动监控函数
+start_monitoring() {
+    if [ -f "$PID_DIR/main.pid" ]; then
+        echo "监控已经在运行中"
+        exit 1
+    fi
+    
+    # 创建pid目录
+    mkdir -p "$PID_DIR"
+    
+    echo "启动监控..."
+    log "cping" "启动监控服务"
+    
+    # 直接在前台运行主进程（systemd 会管理）
+    if [ "${1:-}" = "foreground" ]; then
+        manage_monitoring
+    else
+        # 传统的后台运行方式
+        (
+            manage_monitoring
+        ) </dev/null >/dev/null 2>&1 &
+        
+        # 保存主进程PID
+        echo $! > "$PID_DIR/main.pid"
+        
+        # 等待一会确保进程启动
+        sleep 1
+        
+        # 验证进程是否正在运行
+        if ! ps -p $(cat "$PID_DIR/main.pid") > /dev/null 2>&1; then
+            echo "启动失败，请检查日志"
+            rm -f "$PID_DIR/main.pid"
+            exit 1
+        fi
+    fi
+}
+
+# 修改停止监控函数
+stop_monitoring() {
+    if [ ! -f "$PID_DIR/main.pid" ]; then
+        echo "监控未在运行"
+        exit 1
+    fi
+    
+    echo "停止监控..."
+    log "cping" "停止监控服务"
+    
+    # 停止所有IP监控进程
+    for ip_item in "${IP_LIST[@]}"; do
+        ip="${ip_item%%:*}"
+        stop_ip_monitoring "$ip"
+    done
+    
+    # 停止主进程
+    if [ -f "$PID_DIR/main.pid" ]; then
+        kill $(cat "$PID_DIR/main.pid") 2>/dev/null
+        rm -f "$PID_DIR/main.pid"
+    fi
+    
+    # 清理所有PID文件
+    rm -rf "$PID_DIR"/*
+    
+    log "cping" "监控服务已停止"
+}
+
+# 修改状态显示函数
 show_status() {
     echo "=== CPing 监控状态 ==="
     
-    # 检查是否在运行
-    if [ -f "$PID_FILE" ]; then
-        if ps -p $(cat "$PID_FILE") > /dev/null; then
-            echo "运行状态: 正在运行 (PID: $(cat "$PID_FILE"))"
+    # 检查主进程是否在运行
+    if [ -f "$PID_DIR/main.pid" ]; then
+        main_pid=$(cat "$PID_DIR/main.pid")
+        if ps -p $main_pid > /dev/null 2>&1; then
+            # 计算所有相关进程的内存使用
+            local pids="$main_pid"
+            local mem_usage=0
+            
+            # 收集所有子进程的PID
+            if [ -d "$PID_DIR" ]; then
+                for pid_file in "$PID_DIR"/*.pid; do
+                    if [ -f "$pid_file" ]; then
+                        child_pid=$(cat "$pid_file")
+                        if ps -p $child_pid > /dev/null 2>&1; then
+                            pids="$pids $child_pid"
+                        fi
+                    fi
+                done
+            fi
+            
+            mem_usage=$(ps -o rss= -p $pids 2>/dev/null | awk '{sum += $1} END {printf "%.1f", sum/1024}')
+            echo -e "运行状态: $(print_with_color "正在运行" "$GREEN_BG") (主进程: $main_pid, 内存: ${mem_usage}MB)"
         else
-            echo "运行状态: 已停止 (PID文件存在但进程不存在)"
-            rm -f "$PID_FILE"
+            echo -e "运行状态: $(print_with_color "已停止" "$RED_BG") (PID文件存在但进程不存在)"
+            rm -f "$PID_DIR/main.pid"
         fi
     else
-        echo "运行状态: 已停止"
+        echo -e "运行状态: $(print_with_color "已停止" "$RED_BG")"
     fi
-    
-    # 显示监控的IP列表
-    echo -e "\n监控的IP地址:"
-    if grep -q "^IP=" "$CONFIG_FILE"; then
-        grep "^IP=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n' | while read -r ip; do
-            echo "  - $ip"
-        done
-    else
-        echo "  未配置任何IP地址"
-    fi
+
+    # 显示文件位置信息
+    echo -e "\n文件位置:"
+    echo "  配置文件: $CONFIG_JSON"
+    echo "  日志目录: $LOG_DIR/"
     
     # 显示监控时间段
     echo -e "\n监控时间段:"
-    if grep -q "^TIME_RANGE=" "$CONFIG_FILE"; then
-        grep "^TIME_RANGE=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n' | while IFS=',' read -r start end; do
-            echo "  - $start 到 $end"
-        done
-    else
+    # 确保配置文件存在且包含time_ranges字段
+    if [ ! -f "$CONFIG_JSON" ] || [ "$(jq 'has("time_ranges")' "$CONFIG_JSON")" != "true" ]; then
         echo "  未配置任何监控时间段"
+    else
+        time_ranges_count=$(jq '.time_ranges | length' "$CONFIG_JSON")
+        if [ "$time_ranges_count" -eq 0 ]; then
+            echo "  未配置任何监控时间段"
+        else
+            jq -r '.time_ranges[]' "$CONFIG_JSON" | while read -r trange; do
+                echo "  - $trange"
+            done
+        fi
+    fi
+
+    # 显示当前时间
+    echo -e "\n当前时间: $(date '+%H:%M')"
+
+    # 显示每个IP的状态和进程信息
+    echo -e "\n监控状态:"
+    # 确保配置文件存在且包含ips字段
+    if [ ! -f "$CONFIG_JSON" ] || [ "$(jq 'has("ips")' "$CONFIG_JSON")" != "true" ]; then
+        echo "  未配置任何监控IP"
+        return
     fi
     
-    # 显示当前是否在监控时间段内
-    if is_monitoring_time; then
-        echo -e "\n当前状态: 正在监控中"
-        echo "使用 'cping status error' 查看实时错误日志"
-        echo "使用 'cping status success' 查看实时成功日志"
-    else
-        echo -e "\n当前状态: 不在监控时间段内 (当前时间: $(date '+%H:%M'))"
-    fi
+    for ip_item in "${IP_LIST[@]}"; do
+        ip="${ip_item%%:*}"
+        monitor_24h="${ip_item##*:}"
+        pid_file="$PID_DIR/$ip.pid"
+        
+        status=""
+        if [ -f "$pid_file" ]; then
+            pid=$(cat "$pid_file")
+            if ps -p $pid > /dev/null 2>&1; then
+                if [ "$monitor_24h" = "true" ]; then
+                    status="$(print_with_color "正在监控" "$GREEN_BG") (全天) [PID: $pid]"
+                else
+                    status="$(print_with_color "正在监控" "$GREEN_BG") (时间段) [PID: $pid]"
+                fi
+            else
+                status="$(print_with_color "已停止" "$RED_BG") (进程不存在)"
+                rm -f "$pid_file"
+            fi
+        else
+            if [ "$monitor_24h" = "true" ]; then
+                status="$(print_with_color "未在监控" "$RED_BG") (全天)"
+            else
+                status="$(print_with_color "未在监控" "$RED_BG") (时间段)"
+            fi
+        fi
+        echo "  $ip: $status"
+    done
 }
 
 # 检查是否在监控时间段内
@@ -224,7 +498,7 @@ is_monitoring_time() {
             in_time=1
             break
         fi
-    done < <(grep "^TIME_RANGE=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n')
+    done < <(grep "^TIME_RANGE=" "$CONFIG_JSON" | cut -d'=' -f2 | tr ';' '\n')
     
     # 缓存检查结果
     touch "$LOG_DIR/.time_check"
@@ -233,63 +507,149 @@ is_monitoring_time() {
     return $((1 - in_time))
 }
 
-# 启动监控
-start_monitoring() {
-    if [ -f "$PID_FILE" ]; then
-        echo "监控已经在运行中"
-        exit 1
-    fi
+# 读取所有IP和24h配置
+mapfile -t IP_LIST < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
+# 读取所有时间段
+mapfile -t TIME_RANGES < <(jq -r '.time_ranges[]' "$CONFIG_JSON")
+
+# 检查是否在时间段内，并返回状态信息
+is_in_time_ranges() {
+    local now_hour=$(date +%H)
+    local now_minute=$(date +%M)
+    # 使用 10# 前缀确保以十进制处理
+    local now_minute=$((10#$now_hour * 60 + 10#$now_minute))
+    local now_second=$(date +%S)
+    local total_seconds=$((now_minute * 60 + 10#$now_second))
     
-    echo "启动监控..."
-    log "cping" "启动监控服务"
-    
-    # 为每个IP创建独立的监控进程
-    while IFS=',' read -r ip; do
-        (
-            while true; do
-                if is_monitoring_time; then
-                    # 使用ping获取延迟信息
-                    ping_result=$(ping -c 1 -W 1 "$ip" 2>/dev/null)
-                    if [ $? -eq 0 ]; then
-                        # 提取延迟信息（适配中文输出）
-                        latency=$(echo "$ping_result" | grep "时间=" | awk -F "时间=" '{print $2}' | awk '{print $1}')
-                        log "$ip" "主机 $ip 可达 (延迟: ${latency}毫秒)"
-                        sleep 1
-                    else
-                        log "$ip" "警告: 主机 $ip 不可达"
-                    fi
-                else
-                    # 不在监控时间段内，休眠时间可以长一些
-                    sleep 30
-                fi
-            done
-        ) &
-        echo $! >> "$PID_FILE"
-    done < <(grep "^IP=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n')
+    for range in "${TIME_RANGES[@]}"; do
+        local start=${range%-*}
+        local end=${range#*-}
+        # 使用 10# 前缀确保以十进制处理
+        local start_hour=$((10#${start%:*}))
+        local start_minute=$((10#${start#*:}))
+        local end_hour=$((10#${end%:*}))
+        local end_minute=$((10#${end#*:}))
+        local start_minute=$((start_hour * 60 + start_minute))
+        local end_minute=$((end_hour * 60 + end_minute))
+        local start_seconds=$((start_minute * 60))
+        local end_seconds=$((end_minute * 60))
+        
+        if (( total_seconds >= start_seconds && total_seconds <= end_seconds )); then
+            # 如果距离结束时间不到30秒，返回特殊状态
+            if (( end_seconds - total_seconds <= 30 )); then
+                return 2
+            fi
+            return 0
+        fi
+    done
+    return 1
 }
 
-# 停止监控
-stop_monitoring() {
-    if [ ! -f "$PID_FILE" ]; then
-        echo "监控未在运行"
-        exit 1
+# 获取下一个时间段信息
+get_next_time_info() {
+    local now_minute=$((10#$(date +%H)*60+10#$(date +%M)))
+    local next_start=""
+    local wait_minutes=0
+    
+    # 查找今天的下一个时间段
+    for range in "${TIME_RANGES[@]}"; do
+        local start=${range%-*}
+        local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
+        if (( start_minute > now_minute )); then
+            if [ -z "$next_start" ] || (( start_minute < next_start )); then
+                next_start=$start_minute
+            fi
+        fi
+    done
+    
+    # 如果今天没有更多时间段，查找明天第一个时间段
+    if [ -z "$next_start" ]; then
+        local first_start=""
+        for range in "${TIME_RANGES[@]}"; do
+            local start=${range%-*}
+            local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
+            if [ -z "$first_start" ] || (( start_minute < first_start )); then
+                first_start=$start_minute
+            fi
+        done
+        next_start=$((first_start + 24*60))
     fi
     
-    echo "停止监控..."
-    log "cping" "停止监控服务"
+    wait_minutes=$((next_start - now_minute))
+    local next_hour=$((next_start / 60 % 24))
+    local next_minute=$((next_start % 60))
+    printf "%02d:%02d %d" $next_hour $next_minute $wait_minutes
+}
+
+# 判断某IP当前是否在监控中
+ios_ip_monitoring_now() {
+    local ip_monitor_24h=$1
+    if [ "$ip_monitor_24h" = "true" ]; then
+        return 0
+    else
+        if is_in_time_ranges; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+}
+
+# 获取下一个检测时间点（分钟）
+get_next_check_time() {
+    local now_minute=$((10#$(date +%H)*60+10#$(date +%M)))
+    local next_time=""
     
-    # 停止所有监控进程
-    while read -r pid; do
-        kill "$pid" 2>/dev/null
-    done < "$PID_FILE"
+    for range in "${TIME_RANGES[@]}"; do
+        local start=${range%-*}
+        local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
+        
+        if [ $start_minute -gt $now_minute ]; then
+            if [ -z "$next_time" ] || [ $start_minute -lt $next_time ]; then
+                next_time=$start_minute
+            fi
+                fi
+            done
     
-    # 清理临时文件
-    rm -f "$PID_FILE" "$LOG_DIR/.time_check" "$LOG_DIR/.in_time"
+    # 如果今天没有更多时间段，返回明天第一个时间段
+    if [ -z "$next_time" ]; then
+        local first_time=""
+        for range in "${TIME_RANGES[@]}"; do
+            local start=${range%-*}
+            local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
+            if [ -z "$first_time" ] || [ $start_minute -lt $first_time ]; then
+                first_time=$start_minute
+            fi
+        done
+        next_time=$((first_time + 24*60))
+    fi
+    
+    echo $next_time
+}
+
+# 等待到下一个时间段
+wait_until_next_check() {
+    local next_time=$(get_next_check_time)
+    local now_minute=$((10#$(date +%H)*60+10#$(date +%M)))
+    local wait_minutes=$((next_time - now_minute))
+    
+    # 计算小时和分钟
+    local hours=$((wait_minutes / 60))
+    local minutes=$((wait_minutes % 60))
+    
+    echo "当前时间: $(date +%H:%M)"
+    if [ $hours -gt 0 ]; then
+        echo "等待 ${hours}小时${minutes}分钟后开始下一个监控时间段"
+    else
+        echo "等待 ${minutes}分钟后开始下一个监控时间段"
+    fi
+    
+    sleep $((wait_minutes * 60))
 }
 
 # 重新加载配置
 reload_config() {
-    if [ ! -f "$PID_FILE" ]; then
+    if [ ! -f "$PID_DIR/main.pid" ]; then
         echo "监控未在运行"
         exit 1
     fi
@@ -301,166 +661,289 @@ reload_config() {
     start_monitoring
 }
 
-# 添加监控IP
+# 修改添加IP函数
 add_ip() {
-    local ip=$1
+    local success=0
+    local failed=0
+    
+    for arg in "$@"; do
+        local ip="${arg%:*}"
+        local monitor_24h=false
+        
+        # 检查是否指定了监控模式
+        if [[ "$arg" == *:true ]]; then
+            monitor_24h=true
+        fi
+        
     # 检查是否为有效的IP地址或域名
     if ! [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! [[ $ip =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*(\.[a-zA-Z0-9][a-zA-Z0-9-]*)*$ ]]; then
-        echo "无效的IP地址或域名格式"
-        exit 1
-    fi
-    
-    # 创建配置文件（如果不存在）
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo "IP=$ip" > "$CONFIG_FILE"
-    else
-        # 检查IP是否已存在
-        if grep -q "IP=.*$ip" "$CONFIG_FILE"; then
+            echo "无效的IP地址或域名格式: $ip"
+            ((failed++))
+            continue
+        fi
+        
+        # 检查是否已存在
+        if jq -e --arg ip "$ip" '.ips[] | select(.ip==$ip)' "$CONFIG_JSON" >/dev/null; then
             echo "IP/域名 $ip 已经在监控列表中"
-            exit 1
+            ((failed++))
+            continue
         fi
         
         # 添加新IP
-        if grep -q "^IP=" "$CONFIG_FILE"; then
-            sed -i "s/^IP=.*/&;$ip/" "$CONFIG_FILE"
-        else
-            echo "IP=$ip" >> "$CONFIG_FILE"
-        fi
-    fi
-    
-    # 创建IP的日志目录
+        tmpfile=$(mktemp)
+        jq --arg ip "$ip" --argjson monitor_24h "$monitor_24h" '.ips += [{ip: $ip, monitor_24h: $monitor_24h}]' "$CONFIG_JSON" > "$tmpfile" && mv "$tmpfile" "$CONFIG_JSON"
     mkdir -p "$LOG_DIR/$ip"
     touch "$LOG_DIR/$ip/success.log"
     touch "$LOG_DIR/$ip/error.log"
+        log "cping" "添加监控IP/域名: $ip (24h: $monitor_24h)"
+        echo "已添加IP/域名 $ip 到监控列表 (24h: $monitor_24h)"
+        ((success++))
+    done
     
-    log "cping" "添加监控IP/域名: $ip"
-    echo "已添加IP/域名 $ip 到监控列表"
+    echo -e "\n总结: 成功添加 $success 个，失败 $failed 个"
+    
+    # 修改提示信息
+    if [ $success -gt 0 ]; then
+        echo "提示: 请运行以下命令使新添加的IP生效:"
+        echo "  systemctl restart cping"
+    fi
 }
 
-# 删除监控IP
+# 修改删除IP函数
 del_ip() {
     local ip=$1
-    
     if [ "$ip" = "all" ]; then
-        # 删除所有IP
-        if grep -q "^IP=" "$CONFIG_FILE"; then
             # 记录删除的IP
-            grep "^IP=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n' | while read -r ip; do
-                log "cping" "删除监控IP/域名: $ip"
+        jq -r '.ips[].ip' "$CONFIG_JSON" | while read -r ipitem; do
+            log "cping" "删除监控IP/域名: $ipitem"
             done
-            
             # 清空IP配置
-            sed -i '/^IP=/d' "$CONFIG_FILE"
+        tmpfile=$(mktemp)
+        jq '.ips = []' "$CONFIG_JSON" > "$tmpfile" && mv "$tmpfile" "$CONFIG_JSON"
             echo "已删除所有监控IP/域名"
-        else
-            echo "当前没有配置任何IP地址"
-        fi
+        echo "提示: 请运行以下命令使更改生效:"
+        echo "  systemctl restart cping"
         return
     fi
     
-    # 检查是否为有效的IP地址或域名
-    if ! [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! [[ $ip =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*(\.[a-zA-Z0-9][a-zA-Z0-9-]*)*$ ]]; then
-        echo "无效的IP地址或域名格式"
-        exit 1
-    fi
-    
-    if ! grep -q "IP=.*$ip" "$CONFIG_FILE"; then
+    # 检查是否存在
+    if ! jq -e --arg ip "$ip" '.ips[] | select(.ip==$ip)' "$CONFIG_JSON" >/dev/null; then
         echo "IP/域名 $ip 不在监控列表中"
         exit 1
     fi
     
-    sed -i "s/\(IP=.*\)$ip;/\1/;s/\(IP=.*\)$ip$/\1/" "$CONFIG_FILE"
+    # 删除指定IP
+    tmpfile=$(mktemp)
+    jq --arg ip "$ip" '.ips = [.ips[] | select(.ip != $ip)]' "$CONFIG_JSON" > "$tmpfile" && mv "$tmpfile" "$CONFIG_JSON"
     log "cping" "删除监控IP/域名: $ip"
     echo "已从监控列表中删除IP/域名 $ip"
+    
+    # 修改提示信息
+    echo "提示: 请运行以下命令使更改生效:"
+    echo "  systemctl restart cping"
 }
 
 # 设置监控时间段
 set_time_range() {
-    local start_time=$1
-    local end_time=$2
-    
-    if ! [[ $start_time =~ ^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$ ]] || ! [[ $end_time =~ ^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$ ]]; then
-        echo "无效的时间格式，请使用HH:MM格式"
+    local range=$1
+    # 检查格式
+    if ! [[ $range =~ ^([0-1]?[0-9]|2[0-3]):[0-5][0-9]-([0-1]?[0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+        echo "无效的时间段格式，请使用 HH:MM-HH:MM"
         exit 1
     fi
+    # 检查是否已存在
+    if jq -e --arg range "$range" '.time_ranges[] | select(.==$range)' "$CONFIG_JSON" >/dev/null; then
+        echo "该时间段已存在"
+        exit 1
+    fi
+    # 添加时间段
+    tmpfile=$(mktemp)
+    jq --arg range "$range" '.time_ranges += [$range]' "$CONFIG_JSON" > "$tmpfile" && mv "$tmpfile" "$CONFIG_JSON"
+    log "cping" "添加监控时间段: $range"
+    echo "已添加监控时间段 $range"
+}
+
+# 添加 systemd 启动入口点
+run_service() {
+    # 创建必要的目录
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$LOG_DIR"
+    mkdir -p "$PID_DIR"
     
-    if grep -q "^TIME_RANGE=" "$CONFIG_FILE"; then
-        sed -i "s/^TIME_RANGE=.*/&;$start_time,$end_time/" "$CONFIG_FILE"
+    # 直接在前台运行主进程
+    manage_monitoring
+}
+
+# 安装函数
+install_cping() {
+    echo "正在安装 CPing 服务..."
+    
+    # 创建必要的目录
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$LOG_DIR"
+    mkdir -p "$PID_DIR"
+    
+    # 设置权限
+    chmod 755 "$CONFIG_DIR"
+    chmod 755 "$LOG_DIR"
+    chmod 755 "$PID_DIR"
+    
+    # 创建配置文件
+    echo '{
+    "ips": [],
+    "time_ranges": [
+        "08:00-12:00",
+        "14:00-18:00"
+    ]
+}' > "$CONFIG_JSON"
+    
+    # 设置配置文件权限
+    chmod 644 "$CONFIG_JSON"
+    
+    echo "已创建配置文件: $CONFIG_JSON"
+    echo "默认监控时间段: 08:00-12:00, 14:00-18:00"
+    
+    # 复制脚本到系统目录
+    cp "$0" /usr/local/bin/cping
+    chmod +x /usr/local/bin/cping
+    
+    # 创建服务文件
+    cat > /etc/systemd/system/cping.service << 'EOF'
+[Unit]
+Description=CPing IP Monitor Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cping _run_service
+Restart=always
+RestartSec=3
+User=root
+RuntimeDirectory=cping
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 重新加载 systemd 配置
+    systemctl daemon-reload
+    
+    echo "安装完成。您可以使用以下命令管理服务："
+    echo "  systemctl start cping    # 启动服务"
+    echo "  systemctl stop cping     # 停止服务"
+    echo "  systemctl restart cping  # 重启服务"
+    echo "  systemctl status cping   # 查看服务状态"
+    echo "  systemctl enable cping   # 设置开机自启"
+    echo "  systemctl disable cping  # 取消开机自启"
+    echo ""
+    echo "配置文件位置: $CONFIG_JSON"
+    echo "日志目录位置: $LOG_DIR"
+    echo ""
+    echo "提示: 您可以编辑配置文件来修改监控IP和时间段"
+    echo "      编辑后请执行 systemctl restart cping 使配置生效"
+}
+
+# 卸载函数
+uninstall_cping() {
+    echo "正在卸载 CPing 服务..."
+    systemctl stop cping 2>/dev/null
+    systemctl disable cping 2>/dev/null
+    rm -f /etc/systemd/system/cping.service
+    rm -f /usr/local/bin/cping
+    
+    # 询问是否删除配置和日志
+    read -p "是否删除配置文件和日志？(y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        rm -rf "$CONFIG_DIR"
+        rm -rf "$LOG_DIR"
+        rm -rf "$PID_DIR"
+        echo "配置文件和日志已删除"
     else
-        echo "TIME_RANGE=$start_time,$end_time" >> "$CONFIG_FILE"
+        echo "配置文件和日志已保留在:"
+        echo "  配置目录: $CONFIG_DIR"
+        echo "  日志目录: $LOG_DIR"
     fi
     
-    log "cping" "添加监控时间段: $start_time-$end_time"
-    echo "已添加监控时间段 $start_time-$end_time"
+    systemctl daemon-reload
+    echo "卸载完成"
 }
 
 # 主程序
 case "$1" in
-    start)
-        start_monitoring
-        ;;
-    stop)
-        stop_monitoring
+    _run_service)  # 内部命令，供 systemd 使用
+        run_service
         ;;
     reload)
         reload_config
         ;;
     status)
-        if [ "$2" = "error" ]; then
-            if ! is_monitoring_time; then
-                echo "当前不在监控时间段内"
+        if [ "$2" = "error" ] || [ "$2" = "success" ]; then
+            declare -a ALL_IPS
+            declare -a ALL_IPS_LABELS
+            declare -a ALL_IPS_MONITORING
+            idx=1
+            for ip_item in "${IP_LIST[@]}"; do
+                ip="${ip_item%%:*}"
+                monitor_24h="${ip_item##*:}"
+                if ios_ip_monitoring_now "$monitor_24h"; then
+                    if [ "$monitor_24h" = "true" ]; then
+                        ALL_IPS_LABELS+=("$ip (全天)")
+                    else
+                        ALL_IPS_LABELS+=("$ip (时间段)")
+                    fi
+                    ALL_IPS_MONITORING+=("1")
+                else
+                    ALL_IPS_LABELS+=("$ip (当前不在监控时间段)")
+                    ALL_IPS_MONITORING+=("0")
+                fi
+                ALL_IPS+=("$ip")
+            done
+            if [ ${#ALL_IPS[@]} -eq 0 ]; then
+                echo "当前没有配置任何IP，无法实时查看日志。"
                 exit 1
             fi
-            
-            # 获取当前监控的IP列表
+            if [ "$2" = "error" ]; then
             echo "请选择要监控的主机："
-            echo "0) 所有主机"
-            i=1
-            while read -r ip; do
-                echo "$i) $ip"
-                i=$((i+1))
-            done < <(grep "^IP=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n')
-            
-            # 读取用户选择
+                echo "0) 所有正在监控的主机"
+                for i in "${!ALL_IPS[@]}"; do
+                    echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
+                done
             read -p "请输入选项编号: " choice
-            
-            # 处理用户选择
             if [ "$choice" = "0" ]; then
-                show_log "error" 50 "true"
-            else
-                selected_ip=$(grep "^IP=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n' | sed -n "${choice}p")
-                if [ -n "$selected_ip" ]; then
-                    show_log "error" 50 "true" "$selected_ip"
+                    any_active=0
+                    for i in "${!ALL_IPS[@]}"; do
+                        if [ "${ALL_IPS_MONITORING[$i]}" = "1" ]; then
+                            tail -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" 2>/dev/null &
+                            any_active=1
+                        fi
+                    done
+                    if [ $any_active -eq 0 ]; then
+                        echo "当前没有正在监控的主机，无法实时查看日志。"
+                        exit 1
+                    fi
+                    wait
+                else
+                    sel_idx=$((choice-1))
+                    if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
+                        ip="${ALL_IPS[$sel_idx]}"
+                        tail -f "$LOG_DIR/$ip/error.log" 2>/dev/null
                 else
                     echo "无效的选项"
                     exit 1
                 fi
             fi
-        elif [ "$2" = "success" ]; then
-            if ! is_monitoring_time; then
-                echo "当前不在监控时间段内"
-                exit 1
-            fi
-            
-            # 获取当前监控的IP列表
-            echo "请选择要监控的主机："
-            echo "0) 所有主机"
-            i=1
-            while read -r ip; do
-                echo "$i) $ip"
-                i=$((i+1))
-            done < <(grep "^IP=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n')
-            
-            # 读取用户选择
-            read -p "请输入选项编号: " choice
-            
-            # 处理用户选择
-            if [ "$choice" = "0" ]; then
-                show_log "success" 50 "true"
             else
-                selected_ip=$(grep "^IP=" "$CONFIG_FILE" | cut -d'=' -f2 | tr ';' '\n' | sed -n "${choice}p")
-                if [ -n "$selected_ip" ]; then
-                    show_log "success" 50 "true" "$selected_ip"
+                echo "请选择要监控的主机："
+                for i in "${!ALL_IPS[@]}"; do
+                    echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
+                done
+                read -p "请输入选项编号: " choice
+                sel_idx=$((choice-1))
+                if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
+                    ip="${ALL_IPS[$sel_idx]}"
+                    tail -f "$LOG_DIR/$ip/success.log" 2>/dev/null
                 else
                     echo "无效的选项"
                     exit 1
@@ -471,11 +954,14 @@ case "$1" in
         fi
         ;;
     add)
-        if [ -z "$2" ]; then
+        shift  # 移除第一个参数 'add'
+        if [ $# -eq 0 ]; then
             echo "请指定要添加的IP地址或域名"
+            echo "用法: $0 add <ip1> [ip2:true] [ip3] ..."
+            echo "说明: 在IP后添加':true'表示全天监控，默认为按时间段监控"
             exit 1
         fi
-        add_ip "$2"
+        add_ip "$@"
         ;;
     del)
         if [ -z "$2" ]; then
@@ -484,38 +970,125 @@ case "$1" in
         fi
         del_ip "$2"
         ;;
+    install)
+        install_cping
+        ;;
+    update)
+        echo "正在更新 CPing 服务..."
+        
+        # 检查服务是否已安装
+        if [ ! -f "/etc/systemd/system/cping.service" ]; then
+            echo "服务尚未安装，请先运行: cping install"
+            exit 1
+        fi
+        
+        # 检查服务是否正在运行
+        was_running=0
+        if systemctl is-active cping >/dev/null 2>&1; then
+            was_running=1
+            echo "停止当前运行的服务..."
+            systemctl stop cping
+        fi
+        
+        # 备份原有脚本
+        if [ -f "/usr/local/bin/cping" ]; then
+            cp /usr/local/bin/cping /usr/local/bin/cping.bak
+        fi
+        
+        # 更新脚本
+        cp "$0" /usr/local/bin/cping
+        chmod +x /usr/local/bin/cping
+        
+        # 更新服务文件（如果有变化）
+        cat > /etc/systemd/system/cping.service << 'EOF'
+[Unit]
+Description=CPing IP Monitor Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cping _run_service
+Restart=always
+RestartSec=3
+User=root
+RuntimeDirectory=cping
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        # 重新加载 systemd 配置
+        systemctl daemon-reload
+        
+        # 如果之前在运行，则重新启动服务
+        if [ $was_running -eq 1 ]; then
+            echo "重新启动服务..."
+            systemctl start cping
+        fi
+        
+        echo "更新完成！"
+        if [ -f "/usr/local/bin/cping.bak" ]; then
+            echo "原脚本已备份为: /usr/local/bin/cping.bak"
+        fi
+        ;;
+    uninstall)
+        uninstall_cping
+        ;;
     *)
-        echo "用法: $0 {start|stop|reload|status [error|success]|add <ip>|del <ip|all>}"
+        echo -e "\033[1mCPing v1.0.0\033[0m - 持续ping监控工具"
+        echo "----------------------------------------"
+        echo -e "\033[1m作者信息:\033[0m"
+        echo "  作者: @MasterKe(http://masterke.cn)"
+        echo "  源码: https://github.com/MasterKe2003/cping"
+        echo "----------------------------------------"
+        echo -e "\033[1m服务管理:\033[0m"
+        echo "  systemctl start cping     启动服务"
+        echo "  systemctl stop cping      停止服务"
+        echo "  systemctl restart cping   重启服务"
+        echo "  systemctl status cping    查看服务状态"
         echo ""
-        echo "使用示例:"
-        echo "1. 启动监控服务"
-        echo "   sudo ./cping start"
+        echo -e "\033[1m监控管理:\033[0m"
+        echo "  cping add <ip1> [ip2:true] [ip3]"
+        echo "                           添加监控IP，支持批量添加"
+        echo "                           在IP后添加:true表示全天监控"
+        echo "                           默认为按时间段监控"
         echo ""
-        echo "2. 停止监控服务"
-        echo "   sudo ./cping stop"
+        echo "  cping del <ip|all>       删除指定IP或所有IP"
         echo ""
-        echo "3. 查看监控状态"
-        echo "   sudo ./cping status"
+        echo -e "\033[1m状态查看:\033[0m"
+        echo "  cping status             查看监控状态"
+        echo "  cping status success     查看成功日志"
+        echo "  cping status error       查看错误日志"
         echo ""
-        echo "4. 实时监控所有主机的错误日志"
-        echo "   sudo ./cping status error"
+        echo -e "\033[1m配置信息:\033[0m"
+        echo "  配置文件: $CONFIG_JSON"
+        echo "  日志目录: $LOG_DIR"
         echo ""
-        echo "5. 实时监控所有主机的成功日志"
-        echo "   sudo ./cping status success"
+        echo -e "\033[1m使用示例:\033[0m"
+        echo "  1. 添加监控IP:"
+        echo "     cping add 192.168.1.1"
+        echo "     cping add 192.168.1.1:true    # 全天监控"
+        echo "     cping add 10.0.0.1 10.0.0.2:true 10.0.0.3"
         echo ""
-        echo "6. 添加监控IP/域名"
-        echo "   sudo ./cping add 192.168.1.1"
-        echo "   sudo ./cping add example.com"
+        echo "  2. 删除监控IP:"
+        echo "     cping del 192.168.1.1"
+        echo "     cping del all               # 删除所有IP"
         echo ""
-        echo "7. 删除监控IP/域名"
-        echo "   sudo ./cping del 192.168.1.1"
-        echo "   sudo ./cping del example.com"
+        echo "  3. 查看日志:"
+        echo "     cping status success        # 查看成功日志"
+        echo "     cping status error          # 查看错误日志"
         echo ""
-        echo "8. 删除所有监控IP/域名"
-        echo "   sudo ./cping del all"
+        echo -e "\033[1m注意事项:\033[0m"
+        echo "  - 需要root权限运行"
+        echo "  - 添加或删除IP后需要执行 systemctl restart cping 使配置生效"
+        echo "  - 全天监控的IP不受时间段限制"
         echo ""
-        echo "9. 重载配置文件"
-        echo "   sudo ./cping reload"
+        echo -e "\033[1m服务维护:\033[0m"
+        echo "  cping install            安装为系统服务"
+        echo "  cping update             更新服务"
+        echo "  cping uninstall          卸载服务"
+        echo "----------------------------------------"
         exit 1
         ;;
 esac

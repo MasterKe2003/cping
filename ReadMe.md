@@ -1,150 +1,152 @@
-# CPing - IP监控工具
+# CPing
 
-CPing 是一个用于监控多个IP地址的bash脚本工具，支持配置监控时间段，可以同时监控多个IP地址。
+CPing 是一个基于 systemd 的持续 ping 监控工具，支持按时间段监控和全天候监控。
 
 ## 功能特点
 
-- 支持配置多个监控时间段
-- 支持同时监控多个IP地址
-- 支持动态添加/删除监控IP
-- 自动记录监控日志
-- 支持启动/停止/重载配置
-- 支持查看监控状态
-- 支持查看监控日志
-- 为每个IP单独记录日志
+- 支持多 IP 地址监控
+- 支持全天候监控和时间段监控
+- 基于 systemd 服务管理
+- 实时日志记录
+- 监控状态实时查看
+- 支持成功/失败日志分离
+
+## 系统要求
+
+- Linux 系统（支持 systemd）
+- bash shell
+- root 权限
+- jq 工具（用于 JSON 处理）
 
 ## 安装
 
-1. 将脚本复制到任意目录：
+1. 下载脚本：
 ```bash
-cp cping /path/to/your/directory/
-chmod +x cping
+git clone https://github.com/MasterKe2003/cping.git
+cd cping
 ```
 
-2. 脚本会自动创建必要的目录和文件：
-- `config.conf` - 配置文件
-- `log/` - 日志目录
-  - `cping.log` - 总日志文件
-  - `IP地址/` - 每个IP的日志目录
-    - `success.log` - 成功记录
-    - `error.log` - 失败记录
-- `cping.pid` - 进程ID文件
-
-## 使用方法
-
-### 基本命令
-
-- 启动监控：
+2. 安装服务：
 ```bash
-sudo ./cping start
+bash cping install
 ```
 
-- 停止监控：
-```bash
-sudo ./cping stop
-```
-
-- 重载配置：
-```bash
-sudo ./cping reload
-```
-
-- 查看状态：
-```bash
-sudo ./cping status
-```
-
-### 查看日志
-
-- 查看所有日志（默认显示最近50行）：
-```bash
-sudo ./cping log
-```
-
-- 查看成功的监控记录：
-```bash
-sudo ./cping log success
-```
-
-- 查看失败的监控记录：
-```bash
-sudo ./cping log error
-```
-
-- 查看特定IP的监控记录：
-```bash
-sudo ./cping log ip 192.168.1.1
-```
-
-- 指定显示行数（例如显示最近100行）：
-```bash
-sudo ./cping log success 100
-```
-
-### 管理监控IP
-
-- 添加监控IP：
-```bash
-sudo ./cping add 192.168.1.1
-```
-
-- 删除监控IP：
-```bash
-sudo ./cping del 192.168.1.1
-```
-
-### 配置监控时间段
-
-设置监控时间段（使用24小时制）：
-```bash
-sudo ./cping time 07:00 11:00
-sudo ./cping time 12:00 18:00
-```
+安装过程会：
+- 创建必要的目录（/etc/cping、/var/log/cping）
+- 创建默认配置文件
+- 安装 systemd 服务
+- 设置适当的权限
 
 ## 配置文件
 
-配置文件位于脚本同目录下的 `config.conf`，格式如下：
+配置文件位置：`/etc/cping/config.json`
 
+默认配置示例：
+```json
+{
+    "ips": [],
+    "time_ranges": [
+        "08:00-12:00",
+        "14:00-18:00"
+    ]
+}
 ```
-IP=192.168.1.1;192.168.1.2;192.168.1.3
-TIME_RANGE=07:00,11:00;12:00,18:00
+
+## 使用方法
+
+### 服务管理
+
+```bash
+# 启动服务
+systemctl start cping
+
+# 停止服务
+systemctl stop cping
+
+# 重启服务
+systemctl restart cping
+
+# 查看服务状态
+systemctl status cping
+
+# 设置开机自启
+systemctl enable cping
+
+# 取消开机自启
+systemctl disable cping
 ```
 
-## 状态查看
+### IP 管理
 
-使用 `status` 命令可以查看以下信息：
-- 监控服务的运行状态
-- 当前监控的IP地址列表
-- 配置的监控时间段
-- 当前是否在监控时间段内
-- 最近的监控日志记录
+```bash
+# 添加按时间段监控的 IP
+cping add 192.168.1.1
 
-## 日志查看
+# 添加全天候监控的 IP
+cping add 192.168.1.2:true
 
-使用 `log` 命令可以查看以下信息：
-- 所有监控记录
-- 仅显示成功的监控记录
-- 仅显示失败的监控记录
-- 特定IP的监控记录
-- 可以指定显示的行数
+# 批量添加 IP
+cping add 10.0.0.1 10.0.0.2:true 10.0.0.3
 
-## 日志结构
+# 删除指定 IP
+cping del 192.168.1.1
 
-监控日志保存在脚本目录下的 `log` 目录中：
-- `log/cping.log` - 所有监控记录的总日志
-- `log/IP地址/success.log` - 每个IP的成功记录
-- `log/IP地址/error.log` - 每个IP的失败记录
+# 删除所有 IP
+cping del all
+```
 
-日志文件使用追加模式，重启不会清空历史记录。每个IP的日志包含：
-- 监控启动/停止时间
-- IP地址可达性状态
-- 配置更改记录
+### 状态查看
+
+```bash
+# 查看监控状态
+cping status
+
+# 查看成功日志
+cping status success
+
+# 查看错误日志
+cping status error
+```
+
+## 日志文件
+
+- 主日志目录：`/var/log/cping/`
+- 每个 IP 的日志存放在独立目录中：
+  - 成功日志：`/var/log/cping/<ip>/success.log`
+  - 错误日志：`/var/log/cping/<ip>/error.log`
 
 ## 注意事项
 
-1. 脚本需要root权限运行
-2. 时间格式必须为24小时制（HH:MM）
-3. IP地址格式必须正确
-4. 建议定期检查日志文件大小
-5. 所有文件都保存在脚本所在目录下
-6. 每个IP的日志单独保存，方便查看和分析
+1. 需要 root 权限运行
+2. 添加或删除 IP 后需要重启服务：`systemctl restart cping`
+3. 全天候监控的 IP 不受时间段限制
+4. 时间段监控的 IP 只在配置的时间范围内进行监控
+
+## 卸载
+
+```bash
+cping uninstall
+```
+卸载时可选择是否保留配置文件和日志。
+
+## 维护
+
+```bash
+# 更新服务
+cping update
+
+# 重新加载配置
+systemctl restart cping
+```
+
+## 作者
+
+@MasterKe(http://masterke.cn)
+
+## 源码
+
+https://github.com/MasterKe2003/cping
+
+## 许可证
+
+MIT License
