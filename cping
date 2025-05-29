@@ -213,7 +213,11 @@ manage_monitoring() {
     log "cping" "主进程启动 (PID: $main_pid)"
 
     while true; do
-        for ip_item in "${IP_LIST[@]}"; do
+        # 每次检查时重新读取IP配置
+        local -a current_ip_list
+        mapfile -t current_ip_list < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
+        
+        for ip_item in "${current_ip_list[@]}"; do
             ip="${ip_item%%:*}"
             monitor_24h="${ip_item##*:}"
             pid_file="$PID_DIR/$ip.pid"
@@ -270,10 +274,10 @@ start_ip_monitoring() {
             if [ $? -eq 0 ]; then
                 latency=$(echo "$ping_result" | grep -E "time=|时间=" | tail -n1 | sed -E 's/.*time=|时间=([0-9.]+) *ms.*/\1/')
                 log "$ip" "$ip - 延迟: ${latency}ms"
+                sleep 1
             else
                 log "$ip" "$ip - 不可达"
             fi
-            sleep 1
         done
     ) </dev/null >/dev/null 2>&1 &
     
@@ -442,7 +446,11 @@ show_status() {
         return
     fi
     
-    for ip_item in "${IP_LIST[@]}"; do
+    # 读取当前IP配置
+    local -a current_ip_list
+    mapfile -t current_ip_list < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
+    
+    for ip_item in "${current_ip_list[@]}"; do
         ip="${ip_item%%:*}"
         monitor_24h="${ip_item##*:}"
         pid_file="$PID_DIR/$ip.pid"
@@ -471,51 +479,6 @@ show_status() {
     done
 }
 
-# 检查是否在监控时间段内
-is_monitoring_time() {
-    local current_hour=$(date +%H)
-    local current_minute=$(date +%M)
-    local current_time=$((current_hour * 60 + current_minute))
-    
-    # 缓存时间范围检查结果
-    if [ -f "$LOG_DIR/.time_check" ]; then
-        local last_check=$(stat -c %Y "$LOG_DIR/.time_check")
-        local current_time_sec=$(date +%s)
-        # 如果上次检查在1分钟内，直接返回缓存结果
-        if [ $((current_time_sec - last_check)) -lt 60 ]; then
-            [ -f "$LOG_DIR/.in_time" ] && return 0 || return 1
-        fi
-    fi
-    
-    # 执行时间范围检查
-    local in_time=0
-    while IFS=',' read -r start_time end_time; do
-        start_hour=${start_time%:*}
-        start_minute=${start_time#*:}
-        end_hour=${end_time%:*}
-        end_minute=${end_time#*:}
-        
-        start_minutes=$((start_hour * 60 + start_minute))
-        end_minutes=$((end_hour * 60 + end_minute))
-        
-        if [ $current_time -ge $start_minutes ] && [ $current_time -le $end_minutes ]; then
-            in_time=1
-            break
-        fi
-    done < <(grep "^TIME_RANGE=" "$CONFIG_JSON" | cut -d'=' -f2 | tr ';' '\n')
-    
-    # 缓存检查结果
-    touch "$LOG_DIR/.time_check"
-    [ $in_time -eq 1 ] && touch "$LOG_DIR/.in_time" || rm -f "$LOG_DIR/.in_time"
-    
-    return $((1 - in_time))
-}
-
-# 读取所有IP和24h配置
-mapfile -t IP_LIST < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
-# 读取所有时间段
-mapfile -t TIME_RANGES < <(jq -r '.time_ranges[]' "$CONFIG_JSON")
-
 # 检查是否在时间段内，并返回状态信息
 is_in_time_ranges() {
     local now_hour=$(date +%H)
@@ -525,7 +488,11 @@ is_in_time_ranges() {
     local now_second=$(date +%S)
     local total_seconds=$((now_minute * 60 + 10#$now_second))
     
-    for range in "${TIME_RANGES[@]}"; do
+    # 每次检查时重新读取时间段配置
+    local -a current_time_ranges
+    mapfile -t current_time_ranges < <(jq -r '.time_ranges[]' "$CONFIG_JSON")
+    
+    for range in "${current_time_ranges[@]}"; do
         local start=${range%-*}
         local end=${range#*-}
         # 使用 10# 前缀确保以十进制处理
@@ -549,44 +516,8 @@ is_in_time_ranges() {
     return 1
 }
 
-# 获取下一个时间段信息
-get_next_time_info() {
-    local now_minute=$((10#$(date +%H)*60+10#$(date +%M)))
-    local next_start=""
-    local wait_minutes=0
-    
-    # 查找今天的下一个时间段
-    for range in "${TIME_RANGES[@]}"; do
-        local start=${range%-*}
-        local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
-        if (( start_minute > now_minute )); then
-            if [ -z "$next_start" ] || (( start_minute < next_start )); then
-                next_start=$start_minute
-            fi
-        fi
-    done
-    
-    # 如果今天没有更多时间段，查找明天第一个时间段
-    if [ -z "$next_start" ]; then
-        local first_start=""
-        for range in "${TIME_RANGES[@]}"; do
-            local start=${range%-*}
-            local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
-            if [ -z "$first_start" ] || (( start_minute < first_start )); then
-                first_start=$start_minute
-            fi
-        done
-        next_start=$((first_start + 24*60))
-    fi
-    
-    wait_minutes=$((next_start - now_minute))
-    local next_hour=$((next_start / 60 % 24))
-    local next_minute=$((next_start % 60))
-    printf "%02d:%02d %d" $next_hour $next_minute $wait_minutes
-}
-
 # 判断某IP当前是否在监控中
-ios_ip_monitoring_now() {
+is_ip_monitoring_now() {
     local ip_monitor_24h=$1
     if [ "$ip_monitor_24h" = "true" ]; then
         return 0
@@ -597,58 +528,6 @@ ios_ip_monitoring_now() {
             return 1
         fi
     fi
-}
-
-# 获取下一个检测时间点（分钟）
-get_next_check_time() {
-    local now_minute=$((10#$(date +%H)*60+10#$(date +%M)))
-    local next_time=""
-    
-    for range in "${TIME_RANGES[@]}"; do
-        local start=${range%-*}
-        local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
-        
-        if [ $start_minute -gt $now_minute ]; then
-            if [ -z "$next_time" ] || [ $start_minute -lt $next_time ]; then
-                next_time=$start_minute
-            fi
-                fi
-            done
-    
-    # 如果今天没有更多时间段，返回明天第一个时间段
-    if [ -z "$next_time" ]; then
-        local first_time=""
-        for range in "${TIME_RANGES[@]}"; do
-            local start=${range%-*}
-            local start_minute=$((10#${start%:*}*60 + 10#${start#*:}))
-            if [ -z "$first_time" ] || [ $start_minute -lt $first_time ]; then
-                first_time=$start_minute
-            fi
-        done
-        next_time=$((first_time + 24*60))
-    fi
-    
-    echo $next_time
-}
-
-# 等待到下一个时间段
-wait_until_next_check() {
-    local next_time=$(get_next_check_time)
-    local now_minute=$((10#$(date +%H)*60+10#$(date +%M)))
-    local wait_minutes=$((next_time - now_minute))
-    
-    # 计算小时和分钟
-    local hours=$((wait_minutes / 60))
-    local minutes=$((wait_minutes % 60))
-    
-    echo "当前时间: $(date +%H:%M)"
-    if [ $hours -gt 0 ]; then
-        echo "等待 ${hours}小时${minutes}分钟后开始下一个监控时间段"
-    else
-        echo "等待 ${minutes}分钟后开始下一个监控时间段"
-    fi
-    
-    sleep $((wait_minutes * 60))
 }
 
 # 重新加载配置
@@ -887,11 +766,15 @@ case "$1" in
             declare -a ALL_IPS
             declare -a ALL_IPS_LABELS
             declare -a ALL_IPS_MONITORING
-            idx=1
-            for ip_item in "${IP_LIST[@]}"; do
+            
+            # 读取当前IP配置
+            local -a current_ip_list
+            mapfile -t current_ip_list < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
+            
+            for ip_item in "${current_ip_list[@]}"; do
                 ip="${ip_item%%:*}"
                 monitor_24h="${ip_item##*:}"
-                if ios_ip_monitoring_now "$monitor_24h"; then
+                if is_ip_monitoring_now "$monitor_24h"; then
                     if [ "$monitor_24h" = "true" ]; then
                         ALL_IPS_LABELS+=("$ip (全天)")
                     else
@@ -909,13 +792,13 @@ case "$1" in
                 exit 1
             fi
             if [ "$2" = "error" ]; then
-            echo "请选择要监控的主机："
+                echo "请选择要监控的主机："
                 echo "0) 所有正在监控的主机"
                 for i in "${!ALL_IPS[@]}"; do
                     echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
                 done
-            read -p "请输入选项编号: " choice
-            if [ "$choice" = "0" ]; then
+                read -p "请输入选项编号: " choice
+                if [ "$choice" = "0" ]; then
                     any_active=0
                     for i in "${!ALL_IPS[@]}"; do
                         if [ "${ALL_IPS_MONITORING[$i]}" = "1" ]; then
@@ -933,11 +816,11 @@ case "$1" in
                     if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
                         ip="${ALL_IPS[$sel_idx]}"
                         tail -f "$LOG_DIR/$ip/error.log" 2>/dev/null
-                else
-                    echo "无效的选项"
-                    exit 1
+                    else
+                        echo "无效的选项"
+                        exit 1
+                    fi
                 fi
-            fi
             else
                 echo "请选择要监控的主机："
                 for i in "${!ALL_IPS[@]}"; do
