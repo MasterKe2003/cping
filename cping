@@ -46,8 +46,12 @@ log() {
     if [ ! -d "$LOG_DIR/$ip" ]; then
         mkdir -p "$LOG_DIR/$ip"
     fi
-    # 写入日志 - 直接记录原始输出
+    # 根据消息内容判断是成功还是失败日志
+    if [[ "$message" == *"不可达"* ]]; then
+        echo "$timestamp - $message" >> "$LOG_DIR/$ip/error.log"
+    else
         echo "$timestamp - $message" >> "$LOG_DIR/$ip/success.log"
+    fi
 }
 
 # 显示日志
