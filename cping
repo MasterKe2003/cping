@@ -532,16 +532,18 @@ is_ip_monitoring_now() {
 
 # 重新加载配置
 reload_config() {
-    if [ ! -f "$PID_DIR/main.pid" ]; then
-        echo "监控未在运行"
+    # 检查是否以root权限运行
+    if [ "$EUID" -ne 0 ]; then 
+        echo "请使用root权限运行此命令"
         exit 1
     fi
-    
+
     echo "重新加载配置..."
-    log "cping" "重新加载配置"
-    
-    stop_monitoring
-    start_monitoring
+    systemctl restart cping || {
+        echo "重启服务失败，请检查服务状态: systemctl status cping"
+        exit 1
+    }
+    echo "配置已重新加载"
 }
 
 # 修改添加IP函数
