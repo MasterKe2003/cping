@@ -363,10 +363,11 @@ stop_monitoring() {
     log "cping" "停止监控服务"
     
     # 停止所有IP监控进程
-    for ip_item in "${IP_LIST[@]}"; do
-        ip="${ip_item%%:*}"
-        stop_ip_monitoring "$ip"
-    done
+    if [ -f "$CONFIG_JSON" ]; then
+        jq -r '.ips[].ip' "$CONFIG_JSON" 2>/dev/null | while read -r ip; do
+            stop_ip_monitoring "$ip"
+        done
+    fi
     
     # 停止主进程
     if [ -f "$PID_DIR/main.pid" ]; then
