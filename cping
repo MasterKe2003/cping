@@ -976,6 +976,63 @@ handle_del() {
     del_ip "$ip"
 }
 
+# 显示帮助信息
+show_help() {
+    echo -e "\033[1mCPing v1.0.0\033[0m - 持续ping监控工具"
+    echo "----------------------------------------"
+    echo -e "\033[1m作者信息:\033[0m"
+    echo "  作者: @MasterKe(http://masterke.cn)"
+    echo "  源码: https://github.com/MasterKe2003/cping"
+    echo "----------------------------------------"
+    echo -e "\033[1m服务管理:\033[0m"
+    echo "  systemctl start cping     启动服务"
+    echo "  systemctl stop cping      停止服务"
+    echo "  systemctl restart cping   重启服务"
+    echo "  systemctl status cping    查看服务状态"
+    echo ""
+    echo -e "\033[1m监控管理:\033[0m"
+    echo "  cping add <ip1> [ip2:true] [ip3]"
+    echo "                           添加监控IP，支持批量添加"
+    echo "                           在IP后添加:true表示全天监控"
+    echo "                           默认为按时间段监控"
+    echo ""
+    echo "  cping del <ip|all>       删除指定IP或所有IP"
+    echo ""
+    echo -e "\033[1m状态查看:\033[0m"
+    echo "  cping status             查看监控状态"
+    echo "  cping status success     查看成功日志"
+    echo "  cping status error       查看错误日志"
+    echo ""
+    echo -e "\033[1m配置信息:\033[0m"
+    echo "  配置文件: $CONFIG_JSON"
+    echo "  日志目录: $LOG_DIR"
+    echo ""
+    echo -e "\033[1m使用示例:\033[0m"
+    echo "  1. 添加监控IP:"
+    echo "     cping add 192.168.1.1"
+    echo "     cping add 192.168.1.1:true    # 全天监控"
+    echo "     cping add 10.0.0.1 10.0.0.2:true 10.0.0.3"
+    echo ""
+    echo "  2. 删除监控IP:"
+    echo "     cping del 192.168.1.1"
+    echo "     cping del all               # 删除所有IP"
+    echo ""
+    echo "  3. 查看日志:"
+    echo "     cping status success        # 查看成功日志"
+    echo "     cping status error          # 查看错误日志"
+    echo ""
+    echo -e "\033[1m注意事项:\033[0m"
+    echo "  - 需要root权限运行"
+    echo "  - 添加或删除IP后需要执行 systemctl restart cping 使配置生效"
+    echo "  - 全天监控的IP不受时间段限制"
+    echo ""
+    echo -e "\033[1m服务维护:\033[0m"
+    echo "  cping install            安装为系统服务"
+    echo "  cping update             更新服务"
+    echo "  cping uninstall          卸载服务"
+    echo "----------------------------------------"
+}
+
 # 主程序函数
 main() {
     case "$1" in
@@ -1003,6 +1060,9 @@ main() {
             ;;
         uninstall)
             uninstall_cping
+            ;;
+        help|--help|-h)
+            show_help
             ;;
         *)
             show_help
