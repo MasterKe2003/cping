@@ -755,141 +755,35 @@ uninstall_cping() {
     echo "卸载完成"
 }
 
-# 主程序
-case "$1" in
-    _run_service)  # 内部命令，供 systemd 使用
-        run_service
-        ;;
-    reload)
-        reload_config
-        ;;
-    status)
-        if [ "$2" = "error" ] || [ "$2" = "success" ]; then
-            declare -a ALL_IPS
-            declare -a ALL_IPS_LABELS
-            declare -a ALL_IPS_MONITORING
-            
-            # 读取当前IP配置
-            local -a current_ip_list
-            mapfile -t current_ip_list < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
-            
-            for ip_item in "${current_ip_list[@]}"; do
-                ip="${ip_item%%:*}"
-                monitor_24h="${ip_item##*:}"
-                if is_ip_monitoring_now "$monitor_24h"; then
-                    if [ "$monitor_24h" = "true" ]; then
-                        ALL_IPS_LABELS+=("$ip (全天)")
-                    else
-                        ALL_IPS_LABELS+=("$ip (时间段)")
-                    fi
-                    ALL_IPS_MONITORING+=("1")
-                else
-                    ALL_IPS_LABELS+=("$ip (当前不在监控时间段)")
-                    ALL_IPS_MONITORING+=("0")
-                fi
-                ALL_IPS+=("$ip")
-            done
-            if [ ${#ALL_IPS[@]} -eq 0 ]; then
-                echo "当前没有配置任何IP，无法实时查看日志。"
-                exit 1
-            fi
-            if [ "$2" = "error" ]; then
-                echo "请选择要监控的主机："
-                echo "0) 所有正在监控的主机"
-                for i in "${!ALL_IPS[@]}"; do
-                    echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
-                done
-                read -p "请输入选项编号: " choice
-                if [ "$choice" = "0" ]; then
-                    any_active=0
-                    for i in "${!ALL_IPS[@]}"; do
-                        if [ "${ALL_IPS_MONITORING[$i]}" = "1" ]; then
-                            tail -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" 2>/dev/null &
-                            any_active=1
-                        fi
-                    done
-                    if [ $any_active -eq 0 ]; then
-                        echo "当前没有正在监控的主机，无法实时查看日志。"
-                        exit 1
-                    fi
-                    wait
-                else
-                    sel_idx=$((choice-1))
-                    if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
-                        ip="${ALL_IPS[$sel_idx]}"
-                        tail -f "$LOG_DIR/$ip/error.log" 2>/dev/null
-                    else
-                        echo "无效的选项"
-                        exit 1
-                    fi
-                fi
-            else
-                echo "请选择要监控的主机："
-                for i in "${!ALL_IPS[@]}"; do
-                    echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
-                done
-                read -p "请输入选项编号: " choice
-                sel_idx=$((choice-1))
-                if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
-                    ip="${ALL_IPS[$sel_idx]}"
-                    tail -f "$LOG_DIR/$ip/success.log" 2>/dev/null
-                else
-                    echo "无效的选项"
-                    exit 1
-                fi
-            fi
-        else
-            show_status
-        fi
-        ;;
-    add)
-        shift  # 移除第一个参数 'add'
-        if [ $# -eq 0 ]; then
-            echo "请指定要添加的IP地址或域名"
-            echo "用法: $0 add <ip1> [ip2:true] [ip3] ..."
-            echo "说明: 在IP后添加':true'表示全天监控，默认为按时间段监控"
-            exit 1
-        fi
-        add_ip "$@"
-        ;;
-    del)
-        if [ -z "$2" ]; then
-            echo "请指定要删除的IP地址或域名，或使用 'all' 删除所有IP"
-            exit 1
-        fi
-        del_ip "$2"
-        ;;
-    install)
-        install_cping
-        ;;
-    update)
-        echo "正在更新 CPing 服务..."
-        
-        # 检查服务是否已安装
-        if [ ! -f "/etc/systemd/system/cping.service" ]; then
-            echo "服务尚未安装，请先运行: cping install"
-            exit 1
-        fi
-        
-        # 检查服务是否正在运行
-        was_running=0
-        if systemctl is-active cping >/dev/null 2>&1; then
-            was_running=1
-            echo "停止当前运行的服务..."
-            systemctl stop cping
-        fi
-        
-        # 备份原有脚本
-        if [ -f "/usr/local/bin/cping" ]; then
-            cp /usr/local/bin/cping /usr/local/bin/cping.bak
-        fi
-        
-        # 更新脚本
-        cp "$0" /usr/local/bin/cping
-        chmod +x /usr/local/bin/cping
-        
-        # 更新服务文件（如果有变化）
-        cat > /etc/systemd/system/cping.service << 'EOF'
+# 更新服务
+update_cping() {
+    echo "正在更新 CPing 服务..."
+    
+    # 检查服务是否已安装
+    if [ ! -f "/etc/systemd/system/cping.service" ]; then
+        echo "服务尚未安装，请先运行: cping install"
+        exit 1
+    fi
+    
+    # 检查服务是否正在运行
+    was_running=0
+    if systemctl is-active cping >/dev/null 2>&1; then
+        was_running=1
+        echo "停止当前运行的服务..."
+        systemctl stop cping
+    fi
+    
+    # 备份原有脚本
+    if [ -f "/usr/local/bin/cping" ]; then
+        cp /usr/local/bin/cping /usr/local/bin/cping.bak
+    fi
+    
+    # 更新脚本
+    cp "$0" /usr/local/bin/cping
+    chmod +x /usr/local/bin/cping
+    
+    # 更新服务文件（如果有变化）
+    cat > /etc/systemd/system/cping.service << 'EOF'
 [Unit]
 Description=CPing IP Monitor Service
 After=network.target
@@ -906,80 +800,210 @@ RuntimeDirectoryMode=0755
 [Install]
 WantedBy=multi-user.target
 EOF
-        
-        # 重新加载 systemd 配置
-        systemctl daemon-reload
-        
-        # 如果之前在运行，则重新启动服务
-        if [ $was_running -eq 1 ]; then
-            echo "重新启动服务..."
-            systemctl start cping
-        fi
-        
-        echo "更新完成！"
-        if [ -f "/usr/local/bin/cping.bak" ]; then
-            echo "原脚本已备份为: /usr/local/bin/cping.bak"
-        fi
-        ;;
-    uninstall)
-        uninstall_cping
-        ;;
-    *)
-        echo -e "\033[1mCPing v1.0.0\033[0m - 持续ping监控工具"
-        echo "----------------------------------------"
-        echo -e "\033[1m作者信息:\033[0m"
-        echo "  作者: @MasterKe(http://masterke.cn)"
-        echo "  源码: https://github.com/MasterKe2003/cping"
-        echo "----------------------------------------"
-        echo -e "\033[1m服务管理:\033[0m"
-        echo "  systemctl start cping     启动服务"
-        echo "  systemctl stop cping      停止服务"
-        echo "  systemctl restart cping   重启服务"
-        echo "  systemctl status cping    查看服务状态"
-        echo ""
-        echo -e "\033[1m监控管理:\033[0m"
-        echo "  cping add <ip1> [ip2:true] [ip3]"
-        echo "                           添加监控IP，支持批量添加"
-        echo "                           在IP后添加:true表示全天监控"
-        echo "                           默认为按时间段监控"
-        echo ""
-        echo "  cping del <ip|all>       删除指定IP或所有IP"
-        echo ""
-        echo -e "\033[1m状态查看:\033[0m"
-        echo "  cping status             查看监控状态"
-        echo "  cping status success     查看成功日志"
-        echo "  cping status error       查看错误日志"
-        echo ""
-        echo -e "\033[1m配置信息:\033[0m"
-        echo "  配置文件: $CONFIG_JSON"
-        echo "  日志目录: $LOG_DIR"
-        echo ""
-        echo -e "\033[1m使用示例:\033[0m"
-        echo "  1. 添加监控IP:"
-        echo "     cping add 192.168.1.1"
-        echo "     cping add 192.168.1.1:true    # 全天监控"
-        echo "     cping add 10.0.0.1 10.0.0.2:true 10.0.0.3"
-        echo ""
-        echo "  2. 删除监控IP:"
-        echo "     cping del 192.168.1.1"
-        echo "     cping del all               # 删除所有IP"
-        echo ""
-        echo "  3. 查看日志:"
-        echo "     cping status success        # 查看成功日志"
-        echo "     cping status error          # 查看错误日志"
-        echo ""
-        echo -e "\033[1m注意事项:\033[0m"
-        echo "  - 需要root权限运行"
-        echo "  - 添加或删除IP后需要执行 systemctl restart cping 使配置生效"
-        echo "  - 全天监控的IP不受时间段限制"
-        echo ""
-        echo -e "\033[1m服务维护:\033[0m"
-        echo "  cping install            安装为系统服务"
-        echo "  cping update             更新服务"
-        echo "  cping uninstall          卸载服务"
-        echo "----------------------------------------"
-        exit 1
-        ;;
-esac
+    
+    # 重新加载 systemd 配置
+    systemctl daemon-reload
+    
+    # 如果之前在运行，则重新启动服务
+    if [ $was_running -eq 1 ]; then
+        echo "重新启动服务..."
+        systemctl start cping
+    fi
+    
+    echo "更新完成！"
+    if [ -f "/usr/local/bin/cping.bak" ]; then
+        echo "原脚本已备份为: /usr/local/bin/cping.bak"
+    fi
+}
 
-exit 0 
+# 处理状态查看
+handle_status() {
+    local status_type="$1"
+    
+    # 如果没有参数，显示一般状态
+    if [ -z "$status_type" ]; then
+        show_status
+        return
+    fi
+    
+    # 检查参数是否有效
+    if [ "$status_type" != "error" ] && [ "$status_type" != "success" ]; then
+        echo "无效的状态类型: $status_type"
+        echo "可用的状态类型: success, error"
+        exit 1
+    fi
+    
+    # 处理日志查看
+    declare -a ALL_IPS
+    declare -a ALL_IPS_LABELS
+    declare -a ALL_IPS_MONITORING
+    
+    # 读取当前IP配置
+    if [ ! -f "$CONFIG_JSON" ] || ! jq -e '.ips' "$CONFIG_JSON" >/dev/null 2>&1; then
+        echo "错误: 配置文件不存在或格式无效"
+        exit 1
+    fi
+    
+    local -a current_ip_list
+    mapfile -t current_ip_list < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
+    
+    for ip_item in "${current_ip_list[@]}"; do
+        ip="${ip_item%%:*}"
+        monitor_24h="${ip_item##*:}"
+        if is_ip_monitoring_now "$monitor_24h"; then
+            if [ "$monitor_24h" = "true" ]; then
+                ALL_IPS_LABELS+=("$ip (全天)")
+            else
+                ALL_IPS_LABELS+=("$ip (时间段)")
+            fi
+            ALL_IPS_MONITORING+=("1")
+        else
+            ALL_IPS_LABELS+=("$ip (当前不在监控时间段)")
+            ALL_IPS_MONITORING+=("0")
+        fi
+        ALL_IPS+=("$ip")
+    done
+    
+    if [ ${#ALL_IPS[@]} -eq 0 ]; then
+        echo "当前没有配置任何IP，无法实时查看日志。"
+        exit 1
+    fi
+    
+    if [ "$status_type" = "error" ]; then
+        echo "请选择要监控的主机："
+        echo "0) 所有正在监控的主机"
+        for i in "${!ALL_IPS[@]}"; do
+            echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
+        done
+        read -p "请输入选项编号: " choice
+        if [ "$choice" = "0" ]; then
+            any_active=0
+            for i in "${!ALL_IPS[@]}"; do
+                if [ "${ALL_IPS_MONITORING[$i]}" = "1" ]; then
+                    if [ -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" ]; then
+                        tail -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" 2>/dev/null &
+                        any_active=1
+                    fi
+                fi
+            done
+            if [ $any_active -eq 0 ]; then
+                echo "当前没有正在监控的主机，无法实时查看日志。"
+                exit 1
+            fi
+            wait
+        else
+            sel_idx=$((choice-1))
+            if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
+                ip="${ALL_IPS[$sel_idx]}"
+                if [ -f "$LOG_DIR/$ip/error.log" ]; then
+                    tail -f "$LOG_DIR/$ip/error.log" 2>/dev/null
+                else
+                    echo "错误: 日志文件不存在 ($LOG_DIR/$ip/error.log)"
+                    exit 1
+                fi
+            else
+                echo "无效的选项"
+                exit 1
+            fi
+        fi
+    else
+        echo "请选择要监控的主机："
+        for i in "${!ALL_IPS[@]}"; do
+            echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
+        done
+        read -p "请输入选项编号: " choice
+        sel_idx=$((choice-1))
+        if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
+            ip="${ALL_IPS[$sel_idx]}"
+            if [ -f "$LOG_DIR/$ip/success.log" ]; then
+                tail -f "$LOG_DIR/$ip/success.log" 2>/dev/null
+            else
+                echo "错误: 日志文件不存在 ($LOG_DIR/$ip/success.log)"
+                exit 1
+            fi
+        else
+            echo "无效的选项"
+            exit 1
+        fi
+    fi
+}
+
+# 处理添加IP操作
+handle_add() {
+    local args=("$@")  # 保存所有参数
+    if [ ${#args[@]} -eq 0 ]; then
+        echo "请指定要添加的IP地址或域名"
+        echo "用法: cping add <ip1> [ip2:true] [ip3] ..."
+        echo "说明: 在IP后添加':true'表示全天监控，默认为按时间段监控"
+        exit 1
+    fi
+    add_ip "${args[@]}"
+}
+
+# 处理删除IP操作
+handle_del() {
+    local ip="$1"
+    
+    # 检查参数
+    if [ -z "$ip" ]; then
+        echo "请指定要删除的IP地址或域名，或使用 'all' 删除所有IP"
+        echo "用法: cping del <ip|all>"
+        exit 1
+    fi
+    
+    # 检查配置文件
+    if [ ! -f "$CONFIG_JSON" ]; then
+        echo "错误: 配置文件不存在"
+        exit 1
+    fi
+    
+    # 如果不是 'all'，检查IP是否存在
+    if [ "$ip" != "all" ]; then
+        if ! jq -e --arg ip "$ip" '.ips[] | select(.ip==$ip)' "$CONFIG_JSON" >/dev/null 2>&1; then
+            echo "错误: IP $ip 不在监控列表中"
+            exit 1
+        fi
+    fi
+    
+    # 执行删除操作
+    del_ip "$ip"
+}
+
+# 主程序函数
+main() {
+    case "$1" in
+        _run_service)  # 内部命令，供 systemd 使用
+            run_service
+            ;;
+        reload)
+            reload_config
+            ;;
+        status)
+            handle_status "$2"
+            ;;
+        add)
+            shift  # 移除 'add' 命令
+            handle_add "$@"
+            ;;
+        del)
+            handle_del "$2"
+            ;;
+        install)
+            install_cping
+            ;;
+        update)
+            update_cping
+            ;;
+        uninstall)
+            uninstall_cping
+            ;;
+        *)
+            show_help
+            ;;
+    esac
+    
+    exit 0
+}
+
+# 调用主程序
+main "$@" 
