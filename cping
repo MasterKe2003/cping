@@ -166,8 +166,8 @@ show_log() {
             echo ""
             echo -e "\033[1m状态查看:\033[0m"
             echo "  cping status             查看监控状态"
-            echo "  cping status success     查看成功日志"
-            echo "  cping status error       查看错误日志"
+            echo "  cping success            查看成功日志"
+            echo "  cping error              查看错误日志"
             echo ""
             echo -e "\033[1m配置信息:\033[0m"
             echo "  配置文件: $CONFIG_JSON"
@@ -184,8 +184,8 @@ show_log() {
             echo "     cping del all               # 删除所有IP"
             echo ""
             echo "  3. 查看日志:"
-            echo "     cping status success        # 查看成功日志"
-            echo "     cping status error          # 查看错误日志"
+            echo "     cping success              # 查看成功日志"
+            echo "     cping error                # 查看错误日志"
             echo ""
             echo -e "\033[1m注意事项:\033[0m"
             echo "  - 需要root权限运行"
@@ -1000,8 +1000,8 @@ show_help() {
     echo ""
     echo -e "\033[1m状态查看:\033[0m"
     echo "  cping status             查看监控状态"
-    echo "  cping status success     查看成功日志"
-    echo "  cping status error       查看错误日志"
+    echo "  cping success            查看成功日志"
+    echo "  cping error              查看错误日志"
     echo ""
     echo -e "\033[1m配置信息:\033[0m"
     echo "  配置文件: $CONFIG_JSON"
@@ -1018,8 +1018,8 @@ show_help() {
     echo "     cping del all               # 删除所有IP"
     echo ""
     echo "  3. 查看日志:"
-    echo "     cping status success        # 查看成功日志"
-    echo "     cping status error          # 查看错误日志"
+    echo "     cping success              # 查看成功日志"
+    echo "     cping error                # 查看错误日志"
     echo ""
     echo -e "\033[1m注意事项:\033[0m"
     echo "  - 需要root权限运行"
@@ -1043,7 +1043,13 @@ main() {
             reload_config
             ;;
         status)
-            handle_status "$2"
+            show_status
+            ;;
+        success)
+            handle_status "success"
+            ;;
+        error)
+            handle_status "error"
             ;;
         add)
             shift  # 移除 'add' 命令
