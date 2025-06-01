@@ -903,27 +903,34 @@ handle_status() {
     
     # 处理用户选择
     if [ "$status_type" = "error" ] && [ "$choice" = "0" ]; then
-        any_active=0
+        # 收集所有正在监控的主机的日志文件路径
+        local log_files=""
         for i in "${!ALL_IPS[@]}"; do
             if [ "${ALL_IPS_MONITORING[$i]}" = "1" ]; then
                 if [ -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" ]; then
-                    tail -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" 2>/dev/null &
-                    any_active=1
+                    if [ -z "$log_files" ]; then
+                        log_files="$LOG_DIR/${ALL_IPS[$i]}/error.log"
+                    else
+                        log_files="$log_files $LOG_DIR/${ALL_IPS[$i]}/error.log"
+                    fi
                 fi
             fi
         done
-        if [ $any_active -eq 0 ]; then
+        
+        if [ -z "$log_files" ]; then
             echo "当前没有正在监控的主机，无法实时查看日志。"
             exit 1
         fi
-        wait
+        
+        # 使用单个tail命令监控所有文件
+        tail -f $log_files
     else
         sel_idx=$((choice-1))
         if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
             ip="${ALL_IPS[$sel_idx]}"
             log_file="$LOG_DIR/$ip/$status_type.log"
             if [ -f "$log_file" ]; then
-                tail -f "$log_file" 2>/dev/null
+                tail -f "$log_file"
             else
                 echo "错误: 日志文件不存在 ($log_file)"
                 exit 1
@@ -979,7 +986,7 @@ handle_del() {
 # 显示帮助信息
 show_help() {
     echo "╭────────────────────────────────────────────╮"
-    echo "│       CPing v1.0.0 - 持续ping监控工具      │"
+    echo "│       CPing v1.2.1 - 持续ping监控工具      │"
     echo "│                                            │"
     echo "│     作者: @MasterKe                        │"
     echo "│     网站: http://masterke.cn               │"
