@@ -423,7 +423,7 @@ show_status() {
     # 显示监控时间段
     echo -e "\n监控时间段:"
     # 确保配置文件存在且包含time_ranges字段
-    if [ ! -f "$CONFIG_JSON" ] || [ "$(jq 'has("time_ranges")' "$CONFIG_JSON")" != "true" ]; then
+    if [ ! -f "$CONFIG_JSON" ] || ! jq -e '.time_ranges' "$CONFIG_JSON" >/dev/null 2>&1; then
         echo "  未配置任何监控时间段"
     else
         time_ranges_count=$(jq '.time_ranges | length' "$CONFIG_JSON")
@@ -442,7 +442,7 @@ show_status() {
     # 显示每个IP的状态和进程信息
     echo -e "\n监控状态:"
     # 确保配置文件存在且包含ips字段
-    if [ ! -f "$CONFIG_JSON" ] || [ "$(jq 'has("ips")' "$CONFIG_JSON")" != "true" ]; then
+    if [ ! -f "$CONFIG_JSON" ] || ! jq -e '.ips' "$CONFIG_JSON" >/dev/null 2>&1; then
         echo "  未配置任何监控IP"
         return
     fi
@@ -870,56 +870,43 @@ handle_status() {
         exit 1
     fi
     
+    # 显示IP列表
+    echo "请选择要监控的主机："
     if [ "$status_type" = "error" ]; then
-        echo "请选择要监控的主机："
         echo "0) 所有正在监控的主机"
+    fi
+    for i in "${!ALL_IPS[@]}"; do
+        echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
+    done
+    
+    # 读取用户选择
+    read -p "请输入选项编号: " choice
+    
+    # 处理用户选择
+    if [ "$status_type" = "error" ] && [ "$choice" = "0" ]; then
+        any_active=0
         for i in "${!ALL_IPS[@]}"; do
-            echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
+            if [ "${ALL_IPS_MONITORING[$i]}" = "1" ]; then
+                if [ -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" ]; then
+                    tail -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" 2>/dev/null &
+                    any_active=1
+                fi
+            fi
         done
-        read -p "请输入选项编号: " choice
-        if [ "$choice" = "0" ]; then
-            any_active=0
-            for i in "${!ALL_IPS[@]}"; do
-                if [ "${ALL_IPS_MONITORING[$i]}" = "1" ]; then
-                    if [ -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" ]; then
-                        tail -f "$LOG_DIR/${ALL_IPS[$i]}/error.log" 2>/dev/null &
-                        any_active=1
-                    fi
-                fi
-            done
-            if [ $any_active -eq 0 ]; then
-                echo "当前没有正在监控的主机，无法实时查看日志。"
-                exit 1
-            fi
-            wait
-        else
-            sel_idx=$((choice-1))
-            if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
-                ip="${ALL_IPS[$sel_idx]}"
-                if [ -f "$LOG_DIR/$ip/error.log" ]; then
-                    tail -f "$LOG_DIR/$ip/error.log" 2>/dev/null
-                else
-                    echo "错误: 日志文件不存在 ($LOG_DIR/$ip/error.log)"
-                    exit 1
-                fi
-            else
-                echo "无效的选项"
-                exit 1
-            fi
+        if [ $any_active -eq 0 ]; then
+            echo "当前没有正在监控的主机，无法实时查看日志。"
+            exit 1
         fi
+        wait
     else
-        echo "请选择要监控的主机："
-        for i in "${!ALL_IPS[@]}"; do
-            echo "$((i+1))) ${ALL_IPS_LABELS[$i]}"
-        done
-        read -p "请输入选项编号: " choice
         sel_idx=$((choice-1))
         if [ $sel_idx -ge 0 ] && [ $sel_idx -lt ${#ALL_IPS[@]} ]; then
             ip="${ALL_IPS[$sel_idx]}"
-            if [ -f "$LOG_DIR/$ip/success.log" ]; then
-                tail -f "$LOG_DIR/$ip/success.log" 2>/dev/null
+            log_file="$LOG_DIR/$ip/$status_type.log"
+            if [ -f "$log_file" ]; then
+                tail -f "$log_file" 2>/dev/null
             else
-                echo "错误: 日志文件不存在 ($LOG_DIR/$ip/success.log)"
+                echo "错误: 日志文件不存在 ($log_file)"
                 exit 1
             fi
         else
