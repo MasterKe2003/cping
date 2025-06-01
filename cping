@@ -978,12 +978,19 @@ handle_del() {
 
 # 显示帮助信息
 show_help() {
-    echo -e "\033[1mCPing v1.0.0\033[0m - 持续ping监控工具"
-    echo "----------------------------------------"
-    echo -e "\033[1m作者信息:\033[0m"
-    echo "  作者: @MasterKe(http://masterke.cn)"
-    echo "  源码: https://github.com/MasterKe2003/cping"
-    echo "----------------------------------------"
+    echo "╭────────────────────────────────────────────╮"
+    echo "│       CPing v1.0.0 - 持续ping监控工具      │"
+    echo "│                                            │"
+    echo "│     作者: @MasterKe                        │"
+    echo "│     网站: http://masterke.cn               │"
+    echo "│     源码: github.com/MasterKe2003/cping    │"
+    echo "╰────────────────────────────────────────────╯"
+    echo ""
+    echo -e "\033[1m服务维护:\033[0m"
+    echo "  cping install            安装为系统服务"
+    echo "  cping update             更新服务"
+    echo "  cping uninstall          卸载服务"
+    echo ""
     echo -e "\033[1m服务管理:\033[0m"
     echo "  systemctl start cping     启动服务"
     echo "  systemctl stop cping      停止服务"
@@ -1024,13 +1031,6 @@ show_help() {
     echo -e "\033[1m注意事项:\033[0m"
     echo "  - 需要root权限运行"
     echo "  - 添加或删除IP后需要执行 systemctl restart cping 使配置生效"
-    echo "  - 全天监控的IP不受时间段限制"
-    echo ""
-    echo -e "\033[1m服务维护:\033[0m"
-    echo "  cping install            安装为系统服务"
-    echo "  cping update             更新服务"
-    echo "  cping uninstall          卸载服务"
-    echo "----------------------------------------"
 }
 
 # 主程序函数
