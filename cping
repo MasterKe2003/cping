@@ -422,17 +422,23 @@ show_status() {
     
     # 显示监控时间段
     echo -e "\n监控时间段:"
-    # 确保配置文件存在且包含time_ranges字段
-    if [ ! -f "$CONFIG_JSON" ] || ! jq -e '.time_ranges' "$CONFIG_JSON" >/dev/null 2>&1; then
-        echo "  未配置任何监控时间段"
+    if [ ! -f "$CONFIG_JSON" ]; then
+        echo "  错误: 配置文件不存在"
     else
-        time_ranges_count=$(jq '.time_ranges | length' "$CONFIG_JSON")
-        if [ "$time_ranges_count" -eq 0 ]; then
-            echo "  未配置任何监控时间段"
+        # 检查time_ranges字段是否存在且为数组
+        if ! jq -e '.time_ranges | type == "array"' "$CONFIG_JSON" >/dev/null 2>&1; then
+            echo "  错误: 配置文件中缺少time_ranges字段或格式无效"
         else
-            jq -r '.time_ranges[]' "$CONFIG_JSON" | while read -r trange; do
-                echo "  - $trange"
-            done
+            # 获取时间段列表
+            local ranges
+            ranges=$(jq -r '.time_ranges[]' "$CONFIG_JSON" 2>/dev/null)
+            if [ -z "$ranges" ]; then
+                echo "  未配置任何监控时间段"
+            else
+                echo "$ranges" | while read -r trange; do
+                    echo "  - $trange"
+                done
+            fi
         fi
     fi
 
@@ -441,15 +447,28 @@ show_status() {
 
     # 显示每个IP的状态和进程信息
     echo -e "\n监控状态:"
-    # 确保配置文件存在且包含ips字段
-    if [ ! -f "$CONFIG_JSON" ] || ! jq -e '.ips' "$CONFIG_JSON" >/dev/null 2>&1; then
-        echo "  未配置任何监控IP"
+    if [ ! -f "$CONFIG_JSON" ]; then
+        echo "  错误: 配置文件不存在"
+        return
+    fi
+    
+    # 检查ips字段是否存在且为数组
+    if ! jq -e '.ips | type == "array"' "$CONFIG_JSON" >/dev/null 2>&1; then
+        echo "  错误: 配置文件中缺少ips字段或格式无效"
         return
     fi
     
     # 读取当前IP配置
     local -a current_ip_list
-    mapfile -t current_ip_list < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON")
+    if ! mapfile -t current_ip_list < <(jq -r '.ips[] | "\(.ip):\(.monitor_24h)"' "$CONFIG_JSON" 2>/dev/null); then
+        echo "  错误: 无法读取IP配置"
+        return
+    fi
+    
+    if [ ${#current_ip_list[@]} -eq 0 ]; then
+        echo "  未配置任何监控IP"
+        return
+    fi
     
     for ip_item in "${current_ip_list[@]}"; do
         ip="${ip_item%%:*}"
